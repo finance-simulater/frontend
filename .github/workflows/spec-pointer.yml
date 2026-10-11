@@ -1,0 +1,72 @@
+name: Spec Pointer
+
+on:
+  pull_request:
+    branches:
+      - main
+    # paths-ignore를 두지 않는다 — 이 체크를 branch protection 필수 체크로 지정하면, 워크플로가 스킵된
+    # PR은 체크가 "Expected"로 영구 대기해 merge가 막힌다 (#8).
+
+concurrency:
+  group: spec-pointer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec-pointer:
+    name: Spec Pointer
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # PR에선 HEAD가 merge 커밋이라 첫 번째 부모(HEAD^1)가 merge 기준 base다 — 포인터 검사의 base로 쓴다.
+          fetch-depth: 2
+
+      - name: Test spec pointer check script
+        run: sh scripts/test_check_spec_pointer.sh
+
+      # spec 레포 없이 base/head 포인터만 비교한다. 대부분의 PR은 포인터를 바꾸지 않으므로 여기서 끝난다.
+      - name: Resolve spec pointers
+        id: pointer
+        run: |
+          BASE_PTR="$(git rev-parse HEAD^1:spec)"
+          HEAD_PTR="$(git rev-parse HEAD:spec)"
+          echo "base=$BASE_PTR" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD_PTR" >> "$GITHUB_OUTPUT"
+          if [ "$BASE_PTR" = "$HEAD_PTR" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "spec 포인터 변경 없음 ($HEAD_PTR)"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 이 레포는 public이라 포크 PR이 올 수 있는데, 포크 PR엔 시크릿이 전달되지 않아 private spec을 받을 수 없다.
+      # 검사를 건너뛰면 구멍이 되므로, 포크 PR은 포인터를 바꿀 수 없게 실패시킨다.
+      - name: Require deploy key for pointer changes
+        if: steps.pointer.outputs.changed == 'true'
+        env:
+          HAS_SPEC_KEY: ${{ secrets.SPEC_DEPLOY_KEY != '' }}
+        run: |
+          if [ "$HAS_SPEC_KEY" != "true" ]; then
+            echo "::error::spec 포인터를 바꾸는 PR인데 SPEC_DEPLOY_KEY가 없음 (포크 PR) — 포크에서는 spec 포인터를 바꿀 수 없습니다. 포인터 갱신은 spec 자동 갱신 PR로 반영됩니다."
+            exit 1
+          fi
+
+      # spec 레포가 private이라 읽기 전용 deploy key로 main을 히스토리 전체(fetch-depth: 0)와 함께 받는다.
+      - name: Checkout spec
+        if: steps.pointer.outputs.changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: finance-simulater/spec
+          ref: main
+          fetch-depth: 0
+          path: spec
+          ssh-key: ${{ secrets.SPEC_DEPLOY_KEY }}
+          persist-credentials: false
+
+      # 바뀐 포인터가 spec main에 있는 커밋이고 base 포인터보다 앞서 있는지 검사한다.
+      - name: Check spec submodule pointer
+        if: steps.pointer.outputs.changed == 'true'
+        run: sh scripts/check_spec_pointer.sh "${{ steps.pointer.outputs.base }}" "${{ steps.pointer.outputs.head }}" spec
