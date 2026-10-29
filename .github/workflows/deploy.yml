@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
-    name: Build and Deploy
+  build:
+    name: Build
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -38,6 +38,29 @@ jobs:
         run: pnpm run build
         env:
           NEXT_PUBLIC_API_BASE_URL: ${{ secrets.NEXT_PUBLIC_API_BASE_URL }}
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-out
+          path: out
+          retention-days: 1
+
+  # 백엔드 deploy.yml과 같은 방식 — 레포 변수 DEPLOY_ENABLED가 'true'일 때만 AWS에 배포한다.
+  # 꺼져 있으면 lint·build만 돌고 이 job은 skip된다.
+  deploy:
+    name: Deploy
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+
+    steps:
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-out
+          path: out
 
       - name: Validate deployment secrets
         env:
